@@ -3061,7 +3061,7 @@ def build_rdp_taxonomy(f):
 
 # Build the standard Kraken database
 def build_standard_database(args):
-    # download_taxonomy(args)
+    download_taxonomy(args)
     args.assembly_source = "refseq"
     args.assembly_levels = ["chromosome", "complete_genome"]
     args.resume = True
