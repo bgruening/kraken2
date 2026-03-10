@@ -441,7 +441,7 @@ def download_and_process_blast_volumes(args):
     extraction_futures = []
     tarballs_and_converted_volumes = []
     with concurrent.futures.ProcessPoolExecutor(
-            max_workers=1
+            max_workers=6
     ) as pool:
         with open("manifest.txt", "r") as in_file:
             tarballs = in_file.readlines()
@@ -976,6 +976,8 @@ def make_manifest_from_assembly_summary(
             continue
         if ftp_path == "na":
             continue
+        if ftp_path.endswith("/"):
+            ftp_path = ftp_path[:-1]
         remote_path = ftp_path + "/" + os.path.basename(ftp_path) + suffix
         url_components = urllib.parse.urlsplit(remote_path)
         local_path = url_components.path.replace("/", "", 1)
