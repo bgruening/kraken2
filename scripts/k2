@@ -445,30 +445,40 @@ def download_and_process_blast_volumes(args):
     ) as pool:
         with open("manifest.txt", "r") as in_file:
             tarballs = in_file.readlines()
-        wrapped_func = functools.partial(
+        wrapped_extract_func = functools.partial(
             wrap_with_globals, extract_blast_db_files,
             LOG.get_queue(), LOG.get_level(),
             SCRIPT_PATHNAME
         )
+        wrapped_convert_func = functools.partial(
+            wrap_with_globals, convert_blast_to_fasta,
+            LOG.get_queue(), LOG.get_level(),
+            SCRIPT_PATHNAME
+        )
+
         LOG.info(
             "Extracting index (.nin), header (.nhr), and"
             " sequence files (.nsq) from tarballs\n"
         )
         for tarball in tarballs:
             tarball = os.path.abspath(tarball)
-            f = pool.submit(wrapped_func, tarball.strip())
+            f = pool.submit(wrapped_extract_func, tarball.strip())
             extraction_futures.append(f)
         for future in concurrent.futures.as_completed(extraction_futures):
             result = future.result()
             tarballs_and_converted_volumes.append(result)
-            LOG.info("Finished extracting files from {}\n".format(tarball))
+
+        conversion_futures = []
+        LOG.info(
+            "Converting BLAST volumes to FASTA\n"
+        )
+
         for tarball, volume in tarballs_and_converted_volumes:
-            LOG.info("Converting BLAST volume {} to FASTA\n".format(volume))
-            convert_blast_to_fasta(args, volume, tarball)
-            LOG.info(
-                "Finished converting BLAST volume {} to FASTA\n"
-                .format(volume)
-            )
+            f = pool.submit(wrapped_convert_func, args, volume, tarball)
+            conversion_futures.append(f)
+        for future in concurrent.futures.as_completed(conversion_futures):
+            result = future.result()
+
     library_extension = ".faa" if args.protein else ".fna"
     library_filename = "library" + library_extension
     LOG.info("Generating {} from converted volumes\n".format(library_filename))
@@ -508,12 +518,23 @@ def create_manifest_for_blast_db(db_name, volume_numbers, protein=False):
 def extract_blast_db_files(tarball_pathname):
     extract_dirname = os.path.dirname(tarball_pathname)
     volume = None
+
     with tarfile.open(tarball_pathname, "r:gz") as tar:
+        LOG.info("Extracting files from {}\n".format(tarball_pathname))
         for member in tar.getnames():
             if member.endswith(("nsq", "nin", "nhr")):
+                member_pathname = os.path.join(extract_dirname, member)
+                member_info = tar.getmember(member)
+                if os.path.exists(member_pathname) and\
+                   os.stat(member_pathname).st_size == member_info.size:
+                    LOG.info(
+                        "Already extracted {} to {}\n".format(member, member_pathname)
+                    )
                 if not volume:
                     volume = os.path.splitext(member)[0]
                 tar.extract(member, extract_dirname)
+        LOG.info("Finished extracting files from {}\n".format(tarball_pathname))
+
     return (
         tarball_pathname,
         os.path.join(extract_dirname, volume)
@@ -532,12 +553,18 @@ def convert_blast_to_fasta(args, volume, tarball):
     )
     blast_to_fasta_bin = find_kraken2_binary("blast_to_fasta")
     # blast_to_fasta_argv = ""
+    LOG.info("Converting BLAST volume {} to FASTA\n".format(volume))
     proc = subprocess.Popen([blast_to_fasta_bin, "-s", "-t", volume])
     if proc.wait() != 0:
         LOG.error(
             "Encountered an error while converting BLAST format to FASTA\n"
         )
         sys.exit(1)
+    LOG.info(
+        "Finished converting BLAST volume {} to FASTA\n"
+        .format(volume)
+    )
+
     with open(fasta_filename, "r") as in_file:
         prelim_map_name = os.path.join(
             volume_dirname,
@@ -731,6 +758,11 @@ def scan_fasta_file(
     LOG.info("Generating prelim_map.txt for {}.\n".format(in_file.name))
     iterator = in_file
     iterator_is_dict = False
+    header_regex = re.compile(r"(?:^>|\x01)(\S+)(?: (.*))?")
+    kraken_id_regex = re.compile(r"(?:^|\|)kraken:taxid\|(\d+)")
+    acc_num_regex = re.compile(r"(?:^|\|)([A-Z]+_?[A-Z0-9]+)(?:\||\b|\.)")
+    taxid_regex = re.compile(r"^\d+$")
+
     if type(sequence_to_url) is dict:
         iterator = sequence_to_url
         iterator_is_dict = True
@@ -740,16 +772,32 @@ def scan_fasta_file(
         remote_filepath = sequence_to_url
         if iterator_is_dict:
             remote_filepath = sequence_to_url[line]
-        for match in re.finditer(r"(?:^>|\x01)(\S+)(?: (.*))?", line):
+        for match in re.finditer(header_regex, line):
             seqid = match.group(1)
-            taxid = get_taxid_from_seqid(seqid)
             comment = match.group(2) or ""
+            taxid = None
+            acc_num = None
+            match = re.search(kraken_id_regex, seqid)
+            if match:
+                taxid = match.group(1)
+            elif re.match(taxid_regex, seqid):
+                taxid = seqid
             if not taxid:
+                match = re.search(acc_num_regex, seqid)
+                if match:
+                    acc_num = match.group(1)
+
+            # taxid = get_taxid_from_seqid(seqid)
+            if not taxid and not acc_num:
                 if lenient:
                     continue
                 else:
+                    LOG.error(
+                        "No Tax ID or Accession number associated with sequence {}\n"
+                        .format(line)
+                    )
                     sys.exit(1)
-            if re.match(r"^\d+$", taxid):
+            if taxid:
                 out_file.write(
                     "TAXID\t{:s}\t{:s}\t{:s}\t{:s}\n".format(
                         seqid, taxid, comment, remote_filepath
@@ -853,28 +901,29 @@ def mask_files(input_filenames, output_filename, threads, protein=False):
     with open(output_filename, "wb") as fout:
         masker = spawn_masking_subprocess(fout, threads, protein)
         # number_of_files = len(input_filenames)
-        for i, input_filename in enumerate(input_filenames):
+        for _, input_filename in enumerate(input_filenames):
             library_name = os.path.basename(os.getcwd())
             if "blast" in output_filename:
                 library_name = "blast"
             if library_name == "added":
-                LOG.info(
-                    "Masking low-complexity regions of added "
+                message =\
+                    "low-complexity regions of added "\
                     "library {}\n".format(input_filename)
-                )
+
             elif library_name == "blast":
-                LOG.info(
-                    "Masking low-complexity regions for blast "
+                message =\
+                    "low-complexity regions for blast "\
                     "volume {}\n".format(output_filename)
-                )
             else:
-                LOG.info(
-                    "Masking low-complexity regions of downloaded "
+                message =\
+                    "low-complexity regions of downloaded "\
                     "library {:s}\n".format(library_name)
-                )
+
+            LOG.info("Masking " + message)
             with open(input_filename, "rb") as fin:
                 shutil.copyfileobj(fin, masker.stdin)
                 # masker(fin, i + 1 == number_of_files)
+            LOG.info("Finished masking " + message)
         masker.stdin.close()
         if masker.wait() != 0:
             LOG.error("Error while masking {}\n".format(input_filename))
@@ -5409,10 +5458,13 @@ def make_cmdline_parser():
 
 
 class Logger:
+    queue_handler_setup = False
+
     def __init__(self, filename):
         self.queue = multiprocessing.Manager().Queue(-1)
         logging.StreamHandler.terminator = ""
         self.logger = logging.getLogger("kraken2")
+
         if filename:
             self.logger.setLevel(logging.INFO)
             handler = logging.FileHandler(filename)
@@ -5471,11 +5523,16 @@ class Logger:
     def get_level(self):
         return self.logger.level
 
-    def setup_queue_logger(queue, level):
-        queue_handler = logging.handlers.QueueHandler(queue)
-        logger = logging.getLogger()
-        logger.setLevel(level)
-        logger.addHandler(queue_handler)
+    @classmethod
+    def setup_queue_logger(cls, queue, level):
+        if not cls.queue_handler_setup:
+            queue_handler = logging.handlers.QueueHandler(queue)
+            logger = logging.getLogger()
+            logger.setLevel(level)
+            logger.addHandler(queue_handler)
+            cls.queue_handler_setup = True
+        else:
+            logger = logging.getLogger()
 
         return logger
 
