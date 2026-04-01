@@ -806,7 +806,7 @@ def scan_fasta_file(
             else:
                 out_file.write(
                     "ACCNUM\t{:s}\t{:s}\t{:s}\t{:s}\n".format(
-                        seqid, taxid, comment, remote_filepath
+                        seqid, acc_num, comment, remote_filepath
                     )
                 )
     LOG.info(
@@ -2686,14 +2686,21 @@ def write_to_fifo(filenames, fifo1=None, fifo2=None):
 
 def check_seqidmap():
     LOG.info(
-        "Checking if there are invalid taxid in seqid2taxid.map. "
+        "Checking if there are invalid taxids in seqid2taxid.map. "
         "These taxids will be logged if found and removed from the file\n"
     )
     taxonomy_nodes = {}
+    merged_nodes = {}
     with open(os.path.join("taxonomy", "nodes.dmp"), "r") as fin:
         for entry in fin:
             taxid, parent_taxid = entry.split("\t|")[:2]
             taxonomy_nodes[taxid.strip()] = parent_taxid.strip()
+
+    with open(os.path.join("taxonomy", "merged.dmp"), "r") as fin:
+        for entry in fin:
+            old_taxid, new_taxid = entry.split("\t|")[:2]
+            merged_nodes[old_taxid.strip()] = new_taxid.strip()
+
 
     with open("seqid2taxid.map.new", "w") as fout:
         with open("seqid2taxid.map", "r") as fin:
@@ -2702,9 +2709,20 @@ def check_seqidmap():
                 taxid = taxid.strip()
                 if taxid in taxonomy_nodes:
                     fout.write(line)
+                elif taxid in merged_nodes:
+                    new_taxid = merged_nodes[taxid]
+                    LOG.warning(
+                        "The following taxids are no longer in nodes.dmp and need to"
+                        " be remapped according. See merged.dmp for details\n"
+                    )
+                    LOG.warning(
+                        "The taxid, {}, associated with {} has been remapped to {}\n"
+                        .format(taxid, seqid, new_taxid)
+                    )
+                    fout.write("\t".join([seqid, new_taxid]) + '\n')
                 else:
                     LOG.warning(
-                        "There is no entry for taxid, '{}', contained in, {},"
+                        "There is no entry for taxid, '{}', associated with {},"
                         "in nodes.dmp. Please contact NCBI about this\n"
                         .format(taxid, seqid)
                     )
