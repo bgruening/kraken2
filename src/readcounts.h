@@ -22,9 +22,12 @@ namespace kraken2 {
   public:
     int64_t readCount() const { return n_reads; }
     void incrementReadCount() { ++n_reads; }
-    void decrementReadCount(int64_t amount) { n_reads -= amount; }
+    void decreaseReadCount(int64_t amount) { n_reads -= amount; }
     uint64_t kmerCount() const { return n_kmers; }
     uint64_t distinctKmerCount() const; // to be implemented for each CONTAINER
+    void clearKmerCount() { n_kmers = 0; }
+    void clearReadCount() { n_reads = 0; }
+    void increaseKmerCount(const uint64_t count) { n_kmers += count; }
 
     ReadCounts() : n_reads(0), n_kmers(0) {
     }
@@ -82,11 +85,7 @@ namespace kraken2 {
       return false;
     }
 
-    ReadCounts &special_merge(const ReadCounts &other) {
-      if (other.n_kmers > n_kmers) {
-        n_kmers = other.n_kmers;
-      }
-      n_reads += other.n_reads;
+    ReadCounts &merge_hlls(const ReadCounts &other) {
       kmers += other.kmers;
 
       return *this;
