@@ -584,7 +584,7 @@ std::tuple<size_t, size_t> merge_classification_output_parallel(
         const kraken2::Taxonomy &taxonomy, const char *ifn1, const char *ifn2,
         const char *ofn, const char *cfn, bool use_names,
         kraken2::taxon_counters_t &counters, float confidence_threshold,
-        size_t batch_size, bool recalculate_kmer_counts) {
+        size_t batch_size, bool accumulate_read_counts) {
 
         enum {
                 status_field = 0,
@@ -602,6 +602,7 @@ std::tuple<size_t, size_t> merge_classification_output_parallel(
         std::atomic<size_t> total_unclassified{0};
         std::atomic<size_t> block_count{0};
         std::atomic<bool> finished{false};
+        bool recalculate_kmer_counts = counters.size() != 0;
 
 #pragma omp parallel
         {
@@ -671,7 +672,7 @@ std::tuple<size_t, size_t> merge_classification_output_parallel(
 
                                         block_ready = false;
                                 }
-                                if (block_count == next_block && finished) {
+                                if (block_count.load() == next_block && finished) {
                                         break;
                                 }
 
@@ -691,7 +692,7 @@ std::tuple<size_t, size_t> merge_classification_output_parallel(
                                 block_count.fetch_add(1, std::memory_order_relaxed);
                                 nlines1 = fr1->readlines(lines1);
                                 nlines2 = fr2->readlines(lines2);
-                                block = block_count;
+                                block = block_count.load();
                         }
 
                         local_merge_filename << out_filename << "_" << block;
@@ -702,15 +703,13 @@ std::tuple<size_t, size_t> merge_classification_output_parallel(
                                 // reduce the block count if there is no more
                                 // data to be read.
                                 block_count.fetch_sub(1, std::memory_order_relaxed);
-                                if (counters.size() > 0) {
-                                        #pragma omp critical(update_counters)
-                                        {
-                                                for (const auto &pair : local_counters) {
-                                                        if (counters.find(pair.first) == counters.end()) {
-                                                                counters[pair.first] = pair.second;
-                                                        } else {
-                                                                counters[pair.first] += pair.second;
-                                                        }
+                                #pragma omp critical(update_counters)
+                                {
+                                        for (const auto &pair : local_counters) {
+                                                if (counters.find(pair.first) == counters.end()) {
+                                                        counters[pair.first] = pair.second;
+                                                } else {
+                                                        counters[pair.first] += pair.second;
                                                 }
                                         }
                                 }
@@ -747,7 +746,7 @@ std::tuple<size_t, size_t> merge_classification_output_parallel(
                                 taxid = int_to_string(call, itoa_buf);
 
 
-                                if (fields1[status_field][0] == 'C' || fields2[status_field][0] == 'C') {
+                                if (call) {
                                         status = "C";
                                 } else {
                                         status = "U";
@@ -756,8 +755,8 @@ std::tuple<size_t, size_t> merge_classification_output_parallel(
                                 }
 
                                 if (use_names) {
-                                        taxid_t t = nixmans_atou64_shift(taxid, strlen(taxid));
-                                        taxid_t internal_taxid = taxonomy.GetInternalID(t);
+                                        // taxid_t t = nixmans_atou64_shift(taxid, strlen(taxid));
+                                        taxid_t internal_taxid = taxonomy.GetInternalID(call);
 
                                         const char *name =
                                                 taxonomy.name_data() +
@@ -775,14 +774,14 @@ std::tuple<size_t, size_t> merge_classification_output_parallel(
                                         fputc('\n', out);
                                 }
 
-                                if (recalculate_kmer_counts && status[0] == 'C') {
+                                if (accumulate_read_counts && call) {
                                         taxid_t internal_call =
                                             taxonomy.GetInternalID(call);
                                         local_counters[internal_call];
                                         local_counters[internal_call].incrementReadCount();
                                 }
 
-                                if (lcfn && status[0] == 'C') {
+                                if (lcfn && call) {
                                         fputc('>', lcfn);
                                         fwrite(fields1[header_field], strlen(fields1[header_field]),
                                                1, lcfn);
@@ -820,7 +819,7 @@ std::tuple<size_t, size_t> merge_classification_output(
     const char *ofn, float confidence_threshold,
     kraken2::taxon_counters_t &counters,
     const char *classified_headers_filename, bool use_names,
-    bool recalculate_kmer_counts) {
+    bool accumulate_read_counts) {
 
         FILE *in1 = xfopen(ifn1, "r");
         FILE *in2 = xfopen(ifn2, "r");
@@ -848,6 +847,7 @@ std::tuple<size_t, size_t> merge_classification_output(
         const char *taxid;
 
         std::unordered_map<uint64_t, taxid_t> lca_cache;
+        bool recalculate_kmer_counts = counters.size() != 0;
 
         enum {
                 status_field = 0,
@@ -897,7 +897,7 @@ std::tuple<size_t, size_t> merge_classification_output(
                 taxid = int_to_string(call, itoa_buf);
 
 
-                if (fields1[status_field][0] == 'C' || fields2[status_field][0] == 'C') {
+                if (call) {
                         status = "C";
                 } else {
                         status = "U";
@@ -906,8 +906,7 @@ std::tuple<size_t, size_t> merge_classification_output(
                 }
 
                 if (use_names) {
-                        taxid_t t = nixmans_atou64_shift(taxid, strlen(taxid));
-                        taxid_t internal_taxid = taxonomy.GetInternalID(t);
+                        taxid_t internal_taxid = taxonomy.GetInternalID(call);
 
                         const char *name =
                             taxonomy.name_data() +
@@ -925,25 +924,14 @@ std::tuple<size_t, size_t> merge_classification_output(
                         fputc('\n', out);
                 }
 
-                if (recalculate_kmer_counts && status[0] == 'C') {
-                        // if (fields1[status_field][0] == 'C') {
-                        //         char *taxid_str = fields1[taxid_field];
-                        //         taxid_t taxid1 = nixmans_atou64_shift(taxid_str, strlen(taxid_str));
-                        //         (*counters)[taxonomy.GetInternalID(taxid1)].decreaseReadCount(decrement_amount);
-                        // }
-                        // if (fields2[status_field][0] == 'C') {
-                        //         char *taxid_str = fields2[taxid_field];
-                        //         taxid_t taxid2 = nixmans_atou64_shift(taxid_str, strlen(taxid_str));
-                        //         (*counters)[taxonomy.GetInternalID(taxid2)].decreaseReadCount(decrement_amount);
-                        // }
-
+                if (accumulate_read_counts && call) {
                         taxid_t internal_call =
                                 taxonomy.GetInternalID(call);
                         counters[internal_call];
                         counters[internal_call].incrementReadCount();
                 }
 
-                if (classified_headers_filename && status[0] == 'C') {
+                if (classified_headers_filename && call) {
                         fputc('>', classified_headers);
                         fwrite(fields1[header_field], strlen(fields1[header_field]),
                                1, classified_headers);
