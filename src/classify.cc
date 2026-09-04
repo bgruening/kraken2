@@ -840,9 +840,8 @@ taxid_t ClassifySequence(Sequence &dna, Sequence &dna2, ostringstream &koss,
             tok_stream.push_back({TOK_LOOKUP, (uint32_t) lookup_keys.size()});
             lookup_keys.push_back(*minimizer_ptr);
           }
-        }
-        else {
-          tok_stream.push_back({TOK_REPEAT, (uint32_t)lookup_keys.size() - 1});
+        } else {
+          tok_stream.push_back({TOK_REPEAT, 0});
         }
       }
       if (opts.use_translated_search && frame_idx != 5)
@@ -889,7 +888,9 @@ taxid_t ClassifySequence(Sequence &dna, Sequence &dna2, ostringstream &koss,
           break;
         default:  // TOK_REPEAT
           taxon = last_taxon;
-          curr_taxon_counts[taxon].add_kmer(lookup_keys[tok.key_idx]);
+          if (taxon) {
+            curr_taxon_counts[taxon].increaseKmerCount(1);
+          }
           break;
       }
       if (taxon) {
