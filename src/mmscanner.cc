@@ -180,9 +180,9 @@ uint64_t *MinimizerScanner::NextMinimizer() {
     queue_pos_++;
 
     // Return only if we've read in at least one k-mer's worth of chars
-    // if (str_pos_ >= (size_t) k_) {
-    //   break;
-    // }
+    if (str_pos_ >= (size_t) k_) {
+      break;
+    }
   }  // end while ! changed_minimizer
   assert(! queue_.empty());
   last_minimizer_ = queue_.front().candidate ^ toggle_mask_;

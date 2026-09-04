@@ -842,7 +842,7 @@ taxid_t ClassifySequence(Sequence &dna, Sequence &dna2, ostringstream &koss,
           }
         }
         else {
-          tok_stream.push_back({TOK_REPEAT, 0});
+          tok_stream.push_back({TOK_REPEAT, (uint32_t)lookup_keys.size() - 1});
         }
       }
       if (opts.use_translated_search && frame_idx != 5)
