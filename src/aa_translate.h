@@ -10,7 +10,7 @@
 #include "kraken2_headers.h"
 
 namespace kraken2 {
-
+void initLookUpTables();
 void TranslateToAllFrames(std::string &dna_seq, std::vector<std::string> &aa_seqs);
 
 }

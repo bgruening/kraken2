@@ -317,6 +317,9 @@ void classify(Options &opts, IndexData *index_data) {
   ClassificationStats stats = {0, 0, 0};
 
   OutputStreamData outputs = { false, false, nullptr, nullptr, nullptr, nullptr, &std::cout };
+  if (opts.use_translated_search) {
+    initLookUpTables();
+  }
   // taxon_counters.reserve(taxonomy.node_count());
   struct timeval tv1, tv2;
   gettimeofday(&tv1, nullptr);
@@ -572,16 +575,16 @@ void ProcessFiles(const char *filename1, const char *filename2,
             seq2 = reader2.NextSequence();
             valid_fragment = seq2 != nullptr;
           }
-          if (!seq1->compare_header(seq2->header)) {
-            errx(1, "ERROR: Unmatched pairs.\n"
-                 "Mate 1: %s\nMate 2: %s.\nPlease make sure that pairs are "
-                 "sorted before classification.",
-                 seq1->header.c_str(),
-                 seq2->header.c_str());
-          }
         }
         if (! valid_fragment)
           break;
+        if (opts.paired_end_processing && opts.check_pair_order && !seq1->compare_header(seq2->header)) {
+          errx(1, "ERROR: Unmatched pairs.\n"
+               "Mate 1: %s\nMate 2: %s.\nPlease make sure that pairs are "
+               "sorted before classification.",
+               seq1->header.c_str(),
+               seq2->header.c_str());
+        }
         thread_stats.total_sequences++;
         if (opts.minimum_quality_score > 0) {
           MaskLowQualityBases(*seq1, opts.minimum_quality_score);
@@ -832,7 +835,7 @@ taxid_t ClassifySequence(Sequence &dna, Sequence &dna2, ostringstream &koss,
         else if (*minimizer_ptr != last_minimizer) {
           last_minimizer = *minimizer_ptr;
           bool skip_lookup = idx_opts.minimum_acceptable_hash_value &&
-              MurmurHash3(*minimizer_ptr) < idx_opts.minimum_acceptable_hash_value;
+            MurmurHash3(*minimizer_ptr) < idx_opts.minimum_acceptable_hash_value;
           if (skip_lookup) {
             tok_stream.push_back({TOK_SKIP, 0});
           }
@@ -864,47 +867,47 @@ taxid_t ClassifySequence(Sequence &dna, Sequence &dna2, ostringstream &koss,
       const MinToken &tok = tok_stream[ti];
       taxid_t taxon = 0;
       switch (tok.kind) {
-        case TOK_AMBIG:
-          taxa.push_back(AMBIGUOUS_SPAN_TAXON);
-          continue;
-        case TOK_BORDER_FRAME:
-          taxa.push_back(READING_FRAME_BORDER_TAXON);
-          continue;
-        case TOK_BORDER_MATE:
-          taxa.push_back(MATE_PAIR_BORDER_TAXON);
-          continue;
-        case TOK_SKIP:
-          taxon = 0;
-          last_taxon = 0;
-          break;
-        case TOK_LOOKUP:
-          taxon = lookup_vals[tok.key_idx];
-          last_taxon = taxon;
-          if (taxon) {
-            minimizer_hit_groups++;
-            if (!opts.report_filename.empty() || !opts.taxon_counters_dump_filename.empty())
-              curr_taxon_counts[taxon].add_kmer(lookup_keys[tok.key_idx]);
-          }
-          break;
-        default:  // TOK_REPEAT
-          taxon = last_taxon;
-          if (taxon) {
-            curr_taxon_counts[taxon].increaseKmerCount(1);
-          }
-          break;
+      case TOK_AMBIG:
+        taxa.push_back(AMBIGUOUS_SPAN_TAXON);
+        continue;
+      case TOK_BORDER_FRAME:
+        taxa.push_back(READING_FRAME_BORDER_TAXON);
+        continue;
+      case TOK_BORDER_MATE:
+        taxa.push_back(MATE_PAIR_BORDER_TAXON);
+        continue;
+      case TOK_SKIP:
+        taxon = 0;
+        last_taxon = 0;
+        break;
+      case TOK_LOOKUP:
+        taxon = lookup_vals[tok.key_idx];
+        last_taxon = taxon;
+        if (taxon) {
+          minimizer_hit_groups++;
+          if (!opts.report_filename.empty() || !opts.taxon_counters_dump_filename.empty())
+            curr_taxon_counts[taxon].add_kmer(lookup_keys[tok.key_idx]);
+        }
+        break;
+      default:  // TOK_REPEAT
+        taxon = last_taxon;
+        if (taxon) {
+          curr_taxon_counts[taxon].increaseKmerCount(1);
+        }
+        break;
       }
+      taxa.push_back(taxon);
       if (taxon) {
+        hit_counts[taxon]++;
         if (opts.quick_mode && minimizer_hit_groups >= opts.minimum_hit_groups) {
           call = taxon;
           goto finished_searching;
         }
-        hit_counts[taxon]++;
       }
-      taxa.push_back(taxon);
     }
   }
 
-  finished_searching:
+ finished_searching:
 
   auto total_kmers = taxa.size();
   if (opts.paired_end_processing)

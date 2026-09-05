@@ -410,7 +410,8 @@ int resolve_tree(const kraken2::Taxonomy &taxonomy, kraken2::taxon_counts_t &hit
                 // Score is now sum of hits at max_taxon and w/in max_taxon clade
                 if (max_score >= required_score)
                         // Kill loop and return, we've got enough support here
-                        return max_taxon;
+                        // return max_taxon;
+                        return taxonomy.nodes()[max_taxon].external_id;
                 else
                         // Run up tree until confidence threshold is met
                         // Run off tree if required score isn't met
